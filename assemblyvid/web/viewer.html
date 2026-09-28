@@ -1,0 +1,87 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+*{box-sizing:border-box}html,body{margin:0;overflow:hidden;font-family:"Helvetica Neue",Arial,sans-serif}
+body{background:linear-gradient(180deg,#dfe6e1 0%,#bfcbc4 100%);position:relative}
+canvas{position:absolute;left:0;top:0}
+#ui{position:absolute;left:0;top:0;transform-origin:0 0}
+#brand{position:absolute;left:36px;top:30px;font-size:22px;font-weight:700;color:#26332d}
+#brand span{font-weight:400;opacity:.65;margin-left:10px}
+#cap{position:absolute;left:36px;bottom:40px;width:470px;background:rgba(251,250,246,.93);border-radius:16px;padding:18px 22px 16px;box-shadow:0 10px 30px rgba(20,35,28,.22)}
+#step{font-size:14px;font-weight:700;color:#3d7a5b;letter-spacing:.4px;margin-bottom:4px}
+#title{font-size:24px;font-weight:700;color:#1d2a24;margin-bottom:6px;line-height:1.15}
+#txt{font-size:15px;color:#3b4842;line-height:1.4}
+#hw{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:13px;background:#dbe7de;color:#2f5a44;border-radius:8px;padding:3px 9px}
+#pip{position:absolute;right:36px;top:30px;height:300px;border-radius:10px;box-shadow:0 8px 24px rgba(20,35,28,.3);background:#fff;opacity:0}
+#bar{position:absolute;left:0;bottom:0;height:6px;background:#3d7a5b;width:0}
+#note{position:absolute;right:36px;bottom:20px;font-size:12px;color:#2e3b35;opacity:.6}
+</style></head><body>
+<div id="ui"><div id="brand"></div><img id="pip"><div id="cap"><div id="step"></div><div id="title"></div><div id="txt"></div><div id="hw"></div></div><div id="note"></div><div id="bar"></div></div>
+<script>__THREE__</script>
+<script>
+const P=__PLAN__;
+const W=P.width,H=P.height,DUR=P.dur;
+document.body.style.width=W+'px';document.body.style.height=H+'px';
+const UIS=H/720;const ui=document.getElementById('ui');ui.style.transform='scale('+UIS+')';ui.style.width=(W/UIS)+'px';ui.style.height='720px';
+document.getElementById('brand').innerHTML=P.title+'<span>assembly animation</span>';
+document.getElementById('note').textContent=P.leaflet_name?('Sequence follows leaflet '+P.leaflet_name):'';
+function dec(b,T){const s=atob(b),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return new T(u.buffer);}
+const scene=new THREE.Scene();
+const cam=new THREE.PerspectiveCamera(30,W/H,0.05,60);
+cam.setViewOffset(W,H,-0.13*W,0,W,H);
+const ren=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});
+ren.setSize(W,H);ren.setClearColor(0x000000,0);ren.shadowMap.enabled=true;ren.shadowMap.type=THREE.PCFSoftShadowMap;
+ren.outputEncoding=THREE.sRGBEncoding;ren.toneMapping=THREE.ACESFilmicToneMapping;ren.toneMappingExposure=0.85;
+document.body.insertBefore(ren.domElement,document.body.firstChild);
+scene.add(new THREE.HemisphereLight(0xffffff,0x8a9a92,0.75));
+const key=new THREE.DirectionalLight(0xfff4e6,0.75);key.position.set(2.2,4,3);key.castShadow=true;
+key.shadow.mapSize.set(2048,2048);const sc=key.shadow.camera;sc.left=-3;sc.right=3;sc.top=3;sc.bottom=-3;sc.near=0.5;sc.far=12;key.shadow.bias=-0.0004;scene.add(key);
+const fill=new THREE.DirectionalLight(0xdbe8ff,0.3);fill.position.set(-3,2,-2);scene.add(fill);
+const fl=new THREE.Mesh(new THREE.PlaneGeometry(14,14),new THREE.ShadowMaterial({opacity:0.22}));fl.rotation.x=-Math.PI/2;fl.receiveShadow=true;scene.add(fl);
+(function(){const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');const g=x.createRadialGradient(128,128,10,128,128,128);g.addColorStop(0,'rgba(255,255,255,.55)');g.addColorStop(1,'rgba(255,255,255,0)');x.fillStyle=g;x.fillRect(0,0,256,256);
+const m=new THREE.Mesh(new THREE.PlaneGeometry(6,6),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(c),transparent:true,depthWrite:false}));m.rotation.x=-Math.PI/2;m.position.y=-0.002;scene.add(m);})();
+const ACC=new THREE.Color(0x66c19a);const G=[];
+P.geoms.forEach(d=>{
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(dec(d.p,Float32Array),3));
+  geo.setAttribute('normal',new THREE.BufferAttribute(dec(d.n,Float32Array),3));
+  geo.setIndex(new THREE.BufferAttribute(dec(d.i,Uint32Array),1));
+  geo.computeBoundingBox();const c=new THREE.Vector3();geo.boundingBox.getCenter(c);geo.translate(-c.x,-c.y,-c.z);
+  const base=new THREE.Color(d.color);
+  const mat=new THREE.MeshStandardMaterial({color:base.clone(),roughness:0.6,metalness:0.0});
+  const mesh=new THREE.Mesh(geo,mat);mesh.castShadow=true;mesh.receiveShadow=true;mesh.position.copy(c);scene.add(mesh);
+  G.push({d,mesh,mat,home:c.clone(),base});
+});
+const S=(a,b,t)=>{t=Math.min(1,Math.max(0,(t-a)/(b-a)));return t*t*(3-2*t);};
+function camAt(t){const K=P.cam;let i=0;while(i<K.length-2&&t>K[i+1][0])i++;const A=K[i],B=K[i+1];const u=S(A[0],B[0],t);return A.map((v,k)=>k===0?v:v+(B[k]-v)*u);}
+const pip=document.getElementById('pip');let pipSrc='';
+function setT(t){
+  const k=camAt(t),th=k[1],ph=k[2],r=k[3];
+  cam.position.set(k[4]+r*Math.sin(ph)*Math.sin(th),k[5]+r*Math.cos(ph),k[6]+r*Math.sin(ph)*Math.cos(th));cam.lookAt(k[4],k[5],k[6]);
+  G.forEach(g=>{
+    const d=g.d;let f;
+    if(t<P.dis0)f=1;else if(t<P.dis1)f=1-S(P.dis0,P.dis1,t);else if(t<d.a)f=0;else f=S(d.a,d.b,t);
+    if(t>=P.dis1&&t<d.a)f=0;
+    const fadeIn=t>=P.dis1?S(d.a,d.a+(d.b-d.a)*0.35,t):1;
+    const op=(t<P.dis0)?1:(t<P.dis1?1-S(P.dis0+0.2,P.dis1,t):fadeIn);
+    const tint=(t>=d.a&&t<d.b+0.9)?(1-S(d.b-0.2,d.b+0.9,t)):0;
+    const q=1-f;
+    g.mesh.position.set(g.home.x+d.off[0]*q,g.home.y+d.off[1]*q,g.home.z+d.off[2]*q);
+    g.mesh.rotation.y=(d.spin||0)*q*Math.PI*2;
+    g.mat.opacity=op;g.mat.transparent=op<0.999;g.mesh.visible=op>0.01;
+    g.mat.color.copy(g.base).lerp(ACC,tint*0.55);
+  });
+  let c=null;
+  if(t<P.dis0){c={a:0,b:P.dis0,step:'FINISHED PRODUCT',title:P.title,text:'Here is the finished product. Now let\u2019s build it, step by step.',hw:[],img:null};}
+  P.stages.forEach(x=>{if(t>=x.a&&t<x.b)c=x;});
+  const el=document.getElementById('cap');
+  if(c){const fa=Math.min(S(c.a,c.a+0.4,t),1-S(c.b-0.4,c.b,t));el.style.opacity=fa;el.style.transform='translateY('+((1-fa)*12)+'px)';
+    document.getElementById('step').textContent=c.step;document.getElementById('title').textContent=c.title;document.getElementById('txt').textContent=c.text;
+    document.getElementById('hw').innerHTML=(c.hw||[]).map(h=>'<span class="chip">'+h+'</span>').join('');
+    if(c.img){if(pipSrc!==c.img){pip.src=c.img;pipSrc=c.img;}pip.style.opacity=fa;}else pip.style.opacity=0;
+  }else{el.style.opacity=0;pip.style.opacity=0;}
+  document.getElementById('bar').style.width=(100*t/DUR)+'%';
+  ren.render(scene,cam);
+}
+window.setT=setT;window.DUR=DUR;setT(0);window.READY=true;
+</script></body></html>

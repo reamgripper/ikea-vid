@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "assemblyvid"
+version = "0.1.0"
+description = "Turn a 3D model (GLB) and an IKEA-style assembly leaflet (PDF) into an assembly animation video."
+requires-python = ">=3.9"
+dependencies = [
+  "numpy", "scipy", "trimesh", "DracoPy", "pdfplumber", "pypdfium2",
+  "pillow", "playwright", "imageio-ffmpeg",
+]
+
+[project.scripts]
+assemblyvid = "assemblyvid.cli:main"
+
+[tool.setuptools]
+packages = ["assemblyvid"]
+
+[tool.setuptools.package-data]
+assemblyvid = ["web/*"]
