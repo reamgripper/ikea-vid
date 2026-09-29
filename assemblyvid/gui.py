@@ -222,8 +222,6 @@ class App(tk.Tk):
         user can review and edit before any video is rendered."""
         from . import leaflet, model
         from . import plan as P
-        from . import render
-        from .cli import _name
 
         print("Loading model ..."); m = model.load_glb(a.glb)
         print(f"  {len(m.comps)} separate components, {len(m.F)} triangles")
@@ -241,6 +239,18 @@ class App(tk.Tk):
         if a.color: pl["settings"]["color"] = a.color
 
         print("Rendering keyframe previews for review ...")
+        data = self._build_preview(m, info, pl, a)
+        print(f"Ready for review: {len(pl['stages'])} stages.")
+        self._q.put((_REVIEW_TAG, data))
+
+    def _build_preview(self, m, info, pl, a):
+        """Render one keyframe per stage (in pl's current order) plus the overall BOM.
+        Reused both for the first review and after the user reorders stages."""
+        from . import leaflet
+        from . import plan as P
+        from . import render
+        from .cli import _name
+
         tl = P.timeline(m, pl, a.leaflet, pip=not a.no_pip, width=a.width, height=a.height)
         geoms = P.geometry(m, pl, tl["groups"])
         tmp_dir = tempfile.mkdtemp(prefix="assemblyvid_review_")
@@ -254,15 +264,27 @@ class App(tk.Tk):
         bom = []
         if info and info.get("steps"):
             bom = leaflet.hardware_for(info, info["steps"][0], info["steps"][-1])
-        print(f"Ready for review: {n} stages.")
-        self._q.put((_REVIEW_TAG, dict(args=a, plan=pl, images=images, bom=bom, tmp_dir=tmp_dir)))
+        return dict(args=a, model=m, info=info, plan=pl, images=images, bom=bom, tmp_dir=tmp_dir)
+
+    def _reprocess_review(self, data):
+        """Re-render previews after the user reordered stages, reusing the already
+        loaded model/leaflet so this only redoes the (cheap) timeline + keyframes."""
+        print("Reordered - recomputing previews ...")
+        shutil.rmtree(data["tmp_dir"], ignore_errors=True)
+        new_data = self._build_preview(data["model"], data["info"], data["plan"], data["args"])
+        print("Preview updated.")
+        self._q.put((_REVIEW_TAG, new_data))
 
     def _open_review(self, data):
-        if self._review_win is not None and self._review_win.winfo_exists():
-            self._review_win.destroy()
+        try:
+            if self._review_win is not None and self._review_win.winfo_exists():
+                self._review_win.destroy()
+        except tk.TclError:
+            pass
 
         plan, images, bom, args, tmp_dir = data["plan"], data["images"], data["bom"], data["args"], data["tmp_dir"]
         thumb_refs = []
+        all_controls = []  # buttons to freeze while a reorder is being recomputed
 
         win = tk.Toplevel(self)
         self._review_win = win
@@ -279,6 +301,8 @@ class App(tk.Tk):
         bom_frame.pack(fill="x", padx=8, pady=6)
         bom_text = ", ".join(bom) if bom else "No leaflet hardware detected (no PDF chosen, or none matched)."
         ttk.Label(bom_frame, text=bom_text, wraplength=720, justify="left").pack(anchor="w", padx=6, pady=4)
+        ttk.Label(bom_frame, text="Use ▲ / ▼ to reorder stages if the assembly sequence is wrong.",
+                  foreground="#666").pack(anchor="w", padx=6, pady=(0, 4))
 
         canvas = tk.Canvas(win, borderwidth=0, highlightthickness=0)
         vsb = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
@@ -291,6 +315,28 @@ class App(tk.Tk):
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(canvas_window, width=e.width))
 
         title_vars, text_widgets = [], []
+
+        def sync_edits():
+            for st, tv, txt in zip(plan["stages"], title_vars, text_widgets):
+                st["title"] = tv.get().strip() or st["title"]
+                st["text"] = txt.get("1.0", "end-1c").strip()
+
+        def freeze():
+            for w in all_controls:
+                try: w.configure(state="disabled")
+                except tk.TclError: pass
+
+        def move(i, delta):
+            j = i + delta
+            if not (0 <= j < len(plan["stages"])):
+                return
+            sync_edits()
+            plan["stages"][i], plan["stages"][j] = plan["stages"][j], plan["stages"][i]
+            freeze()
+            self._append_log("Reordering stages, recomputing previews ...\n")
+            self._start(lambda: self._reprocess_review(data))
+
+        n_stages = len(plan["stages"])
         for i, st in enumerate(plan["stages"]):
             row = ttk.Frame(scroll_frame, relief="groove", borderwidth=1)
             row.pack(fill="x", padx=4, pady=4)
@@ -305,7 +351,8 @@ class App(tk.Tk):
             steps = st.get("steps")
             steps_txt = (f"Steps {steps[0]}–{steps[1]}" if steps else f"Stage {i + 1}")
             if st.get("steps_estimated"): steps_txt += " (est.)"
-            ttk.Label(row, text=steps_txt, font=("TkDefaultFont", 9, "italic")).grid(row=0, column=1, sticky="w", padx=6, pady=(6, 0))
+            ttk.Label(row, text=f"{i + 1}. {steps_txt}", font=("TkDefaultFont", 9, "italic")).grid(
+                row=0, column=1, sticky="w", padx=6, pady=(6, 0))
 
             tv = tk.StringVar(value=st.get("title", "")); title_vars.append(tv)
             ttk.Entry(row, textvariable=tv).grid(row=1, column=1, sticky="we", padx=6)
@@ -317,13 +364,20 @@ class App(tk.Tk):
             if hw:
                 ttk.Label(row, text="Hardware: " + ", ".join(hw), foreground="#666").grid(row=3, column=1, sticky="w", padx=6, pady=(0, 6))
 
+            mv = ttk.Frame(row); mv.grid(row=0, column=2, rowspan=4, padx=6, pady=6, sticky="n")
+            up_btn = ttk.Button(mv, text="▲", width=3, command=lambda i=i: move(i, -1))
+            up_btn.pack(pady=(0, 2))
+            if i == 0: up_btn.configure(state="disabled")
+            down_btn = ttk.Button(mv, text="▼", width=3, command=lambda i=i: move(i, 1))
+            down_btn.pack()
+            if i == n_stages - 1: down_btn.configure(state="disabled")
+            all_controls += [up_btn, down_btn]
+
         # keep the PhotoImage objects alive for the life of the window
         win._thumb_refs = thumb_refs
 
         def approve():
-            for st, tv, txt in zip(plan["stages"], title_vars, text_widgets):
-                st["title"] = tv.get().strip() or st["title"]
-                st["text"] = txt.get("1.0", "end-1c").strip()
+            sync_edits()
             from . import plan as P
             plan_path = args.plan or str(Path(args.output).with_suffix(".plan.json"))
             P.save(plan, plan_path)
@@ -336,8 +390,11 @@ class App(tk.Tk):
 
         btns = ttk.Frame(win)
         btns.pack(fill="x", padx=8, pady=8)
-        ttk.Button(btns, text="Cancel", command=on_cancel).pack(side="right", padx=4)
-        ttk.Button(btns, text="Approve & render video", command=approve).pack(side="right", padx=4)
+        cancel_btn = ttk.Button(btns, text="Cancel", command=on_cancel)
+        cancel_btn.pack(side="right", padx=4)
+        approve_btn = ttk.Button(btns, text="Approve & render video", command=approve)
+        approve_btn.pack(side="right", padx=4)
+        all_controls += [cancel_btn, approve_btn]
 
 
 def main():
