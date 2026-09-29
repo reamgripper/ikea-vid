@@ -25,6 +25,17 @@ Requires Python 3.9+.
 Useful options: `--fps 24 --width 1280 --height 720 --pace 1.5 --color "#e8e4da" --no-pip`
 Quick look at one moment instead of a whole video: `--frame 30` (writes a PNG).
 
+### GUI
+
+Prefer clicking through files instead of the command line? Run:
+
+    assemblyvid-gui
+
+This opens a desktop window with file pickers for the GLB model and leaflet PDF (and an
+optional plan.json), the same options as the CLI, and buttons for **Analyze**, **Build
+video**, and **Check install** - with the log shown live. Requires Tk (bundled with
+the standard python.org installer on Windows/macOS; on Linux install `python3-tk`).
+
 ## Getting good results: the plan file
 
 A GLB is usually one fused mesh with no part names, and a leaflet is mostly pictures, so the tool has to *guess*

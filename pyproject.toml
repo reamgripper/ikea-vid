@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 assemblyvid = "assemblyvid.cli:main"
+assemblyvid-gui = "assemblyvid.gui:main"
 
 [tool.setuptools]
 packages = ["assemblyvid"]
