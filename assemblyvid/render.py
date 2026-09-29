@@ -34,6 +34,21 @@ def render_frame(html_path, t, png_path, width, height):
         pg.evaluate(f"setT({t})"); pg.screenshot(path=str(png_path)); b.close()
 
 
+def render_keyframes(html_path, times, width, height):
+    """Render one JPEG (bytes) per time in `times`, reusing a single browser session. Used for the plan-review previews."""
+    from playwright.sync_api import sync_playwright
+    imgs = []
+    with sync_playwright() as pw:
+        b = pw.chromium.launch(args=CHROME_ARGS)
+        pg = b.new_page(viewport={"width": width, "height": height})
+        pg.goto(html_path.as_uri()); pg.wait_for_function("window.READY===true", timeout=60000)
+        for t in times:
+            pg.evaluate(f"setT({t})")
+            imgs.append(pg.screenshot(type="jpeg", quality=85))
+        b.close()
+    return imgs
+
+
 def render_video(html_path, out, fps, width, height, dur, quality=20):
     from playwright.sync_api import sync_playwright
     n = int(dur * fps)

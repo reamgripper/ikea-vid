@@ -32,9 +32,15 @@ Prefer clicking through files instead of the command line? Run:
     assemblyvid-gui
 
 This opens a desktop window with file pickers for the GLB model and leaflet PDF (and an
-optional plan.json), the same options as the CLI, and buttons for **Analyze**, **Build
-video**, and **Check install** - with the log shown live. Requires Tk (bundled with
+optional plan.json), the same options as the CLI, and buttons for **Analyze**, **Review &
+build video**, and **Check install** - with the log shown live. Requires Tk (bundled with
 the standard python.org installer on Windows/macOS; on Linux install `python3-tk`).
+
+**Review & build video** doesn't render straight away: it first groups the parts, reads the
+leaflet, and shows a review window with the aggregated bill of materials plus one keyframe
+image per stage. You can edit each stage's title/text right there; the video is only
+rendered once you click **Approve & render video** (or **Cancel** to back out without
+rendering anything).
 
 ## Getting good results: the plan file
 

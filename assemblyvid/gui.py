@@ -1,12 +1,17 @@
 """Desktop file-picker UI for assemblyvid: point at a GLB and a leaflet PDF, then
 Analyze (write an editable plan.json) or Build (render the video) - no command line needed.
+Build first opens a Review step (bill of materials + a keyframe per stage, editable
+titles/text) and only renders the video once that's approved.
 """
-import queue, sys, threading, tkinter as tk
+import io, os, queue, shutil, sys, tempfile, threading, tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from types import SimpleNamespace
 
+from PIL import Image, ImageTk
+
 _DONE = object()
+_REVIEW_TAG = "__REVIEW__"
 
 
 class _QueueWriter:
@@ -39,6 +44,7 @@ class App(tk.Tk):
 
         self._q = queue.Queue()
         self._worker = None
+        self._review_win = None
         self._build_ui()
         self.after(100, self._drain_log)
 
@@ -103,7 +109,7 @@ class App(tk.Tk):
         btns.pack(fill="x", **pad)
         self.analyze_btn = ttk.Button(btns, text="Analyze → write plan.json", command=self._run_analyze)
         self.analyze_btn.pack(side="left", padx=4)
-        self.build_btn = ttk.Button(btns, text="Build video", command=self._run_build)
+        self.build_btn = ttk.Button(btns, text="Review & build video…", command=self._run_build)
         self.build_btn.pack(side="left", padx=4)
         self.doctor_btn = ttk.Button(btns, text="Check install", command=self._run_doctor)
         self.doctor_btn.pack(side="left", padx=4)
@@ -128,6 +134,8 @@ class App(tk.Tk):
                 item = self._q.get_nowait()
                 if item is _DONE:
                     self._set_running(False)
+                elif isinstance(item, tuple) and item[0] == _REVIEW_TAG:
+                    self._open_review(item[1])
                 else:
                     self._append_log(item)
         except queue.Empty:
@@ -202,12 +210,131 @@ class App(tk.Tk):
     def _run_build(self):
         a = self._args(self.video_output.get().strip() or "assembly.mp4")
         if a is None: return
-        from .cli import cmd_build
-        self._start(lambda: cmd_build(a))
+        self._start(lambda: self._prepare_review(a))
 
     def _run_doctor(self):
         from .cli import cmd_doctor
         self._start(lambda: cmd_doctor(None))
+
+    def _prepare_review(self, a):
+        """Runs in the worker thread: load model/leaflet, build (or load) the plan,
+        then render one keyframe per stage and collect the bill of materials so the
+        user can review and edit before any video is rendered."""
+        from . import leaflet, model
+        from . import plan as P
+        from . import render
+        from .cli import _name
+
+        print("Loading model ..."); m = model.load_glb(a.glb)
+        print(f"  {len(m.comps)} separate components, {len(m.F)} triangles")
+        info = None
+        if a.leaflet:
+            print("Reading leaflet ..."); info = leaflet.parse(a.leaflet)
+            print(f"  {len(info['steps'])} numbered steps found")
+        if a.plan and os.path.exists(a.plan):
+            print(f"Using plan {a.plan}"); pl = P.load(a.plan)
+        else:
+            pl = P.make_plan(m, info, a.preset, a.max_groups, os.path.basename(a.glb), os.path.basename(a.leaflet) if a.leaflet else "")
+            print(f"Auto-grouped into {len(pl['groups'])} parts / {len(pl['stages'])} stages")
+        pl.setdefault("settings", {})
+        if a.pace: pl["settings"]["pace"] = a.pace
+        if a.color: pl["settings"]["color"] = a.color
+
+        print("Rendering keyframe previews for review ...")
+        tl = P.timeline(m, pl, a.leaflet, pip=not a.no_pip, width=a.width, height=a.height)
+        geoms = P.geometry(m, pl, tl["groups"])
+        tmp_dir = tempfile.mkdtemp(prefix="assemblyvid_review_")
+        html = render.make_html(tl, geoms, _name(a.glb), tmp_dir)
+        n = len(pl["stages"])
+        times = [max(0.0, tl["stages"][i]["b"] - 0.05) for i in range(n)]
+        pw = max(240, min(480, a.width)); ph = round(pw * a.height / a.width)
+        images = render.render_keyframes(html, times, pw, ph)
+
+        bom = []
+        if info and info.get("steps"):
+            bom = leaflet.hardware_for(info, info["steps"][0], info["steps"][-1])
+        print(f"Ready for review: {n} stages.")
+        self._q.put((_REVIEW_TAG, dict(args=a, plan=pl, images=images, bom=bom, tmp_dir=tmp_dir)))
+
+    def _open_review(self, data):
+        if self._review_win is not None and self._review_win.winfo_exists():
+            self._review_win.destroy()
+
+        plan, images, bom, args, tmp_dir = data["plan"], data["images"], data["bom"], data["args"], data["tmp_dir"]
+        thumb_refs = []
+
+        win = tk.Toplevel(self)
+        self._review_win = win
+        win.title("Review plan — approve to render the video")
+        win.geometry("760x640")
+        win.transient(self)
+
+        def on_cancel():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        bom_frame = ttk.LabelFrame(win, text="Bill of materials (hardware)")
+        bom_frame.pack(fill="x", padx=8, pady=6)
+        bom_text = ", ".join(bom) if bom else "No leaflet hardware detected (no PDF chosen, or none matched)."
+        ttk.Label(bom_frame, text=bom_text, wraplength=720, justify="left").pack(anchor="w", padx=6, pady=4)
+
+        canvas = tk.Canvas(win, borderwidth=0, highlightthickness=0)
+        vsb = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="top", fill="both", expand=True, padx=(8, 0), pady=6)
+        scroll_frame = ttk.Frame(canvas)
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(canvas_window, width=e.width))
+
+        title_vars, text_widgets = [], []
+        for i, st in enumerate(plan["stages"]):
+            row = ttk.Frame(scroll_frame, relief="groove", borderwidth=1)
+            row.pack(fill="x", padx=4, pady=4)
+            row.columnconfigure(1, weight=1)
+
+            photo = ImageTk.PhotoImage(Image.open(io.BytesIO(images[i])))
+            thumb_refs.append(photo)
+            ttk.Label(row, image=photo).grid(row=0, column=0, rowspan=4, padx=6, pady=6)
+
+            steps = st.get("steps")
+            steps_txt = (f"Steps {steps[0]}–{steps[1]}" if steps else f"Stage {i + 1}")
+            if st.get("steps_estimated"): steps_txt += " (est.)"
+            ttk.Label(row, text=steps_txt, font=("TkDefaultFont", 9, "italic")).grid(row=0, column=1, sticky="w", padx=6, pady=(6, 0))
+
+            tv = tk.StringVar(value=st.get("title", "")); title_vars.append(tv)
+            ttk.Entry(row, textvariable=tv).grid(row=1, column=1, sticky="we", padx=6)
+
+            txt = tk.Text(row, height=2, wrap="word"); txt.insert("1.0", st.get("text", ""))
+            txt.grid(row=2, column=1, sticky="we", padx=6, pady=(2, 2)); text_widgets.append(txt)
+
+            hw = st.get("hardware") or []
+            if hw:
+                ttk.Label(row, text="Hardware: " + ", ".join(hw), foreground="#666").grid(row=3, column=1, sticky="w", padx=6, pady=(0, 6))
+
+        # keep the PhotoImage objects alive for the life of the window
+        win._thumb_refs = thumb_refs
+
+        def approve():
+            for st, tv, txt in zip(plan["stages"], title_vars, text_widgets):
+                st["title"] = tv.get().strip() or st["title"]
+                st["text"] = txt.get("1.0", "end-1c").strip()
+            from . import plan as P
+            plan_path = args.plan or str(Path(args.output).with_suffix(".plan.json"))
+            P.save(plan, plan_path)
+            self._append_log(f"Approved. Saved reviewed plan to {plan_path}\n")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            win.destroy()
+            new_args = SimpleNamespace(**vars(args)); new_args.plan = plan_path
+            from .cli import cmd_build
+            self._start(lambda: cmd_build(new_args))
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=8, pady=8)
+        ttk.Button(btns, text="Cancel", command=on_cancel).pack(side="right", padx=4)
+        ttk.Button(btns, text="Approve & render video", command=approve).pack(side="right", padx=4)
 
 
 def main():
