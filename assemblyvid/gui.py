@@ -247,8 +247,9 @@ class App(tk.Tk):
         html = render.make_html(tl, geoms, _name(a.glb), tmp_dir)
         n = len(pl["stages"])
         times = [max(0.0, tl["stages"][i]["b"] - 0.05) for i in range(n)]
-        pw = max(240, min(480, a.width)); ph = round(pw * a.height / a.width)
-        images = render.render_keyframes(html, times, pw, ph)
+        # capture at the same viewport the real video uses (the page's canvas/overlay
+        # layout is sized for it) and only downscale the resulting image for display
+        images = render.render_keyframes(html, times, a.width, a.height)
 
         bom = []
         if info and info.get("steps"):
@@ -295,7 +296,9 @@ class App(tk.Tk):
             row.pack(fill="x", padx=4, pady=4)
             row.columnconfigure(1, weight=1)
 
-            photo = ImageTk.PhotoImage(Image.open(io.BytesIO(images[i])))
+            thumb = Image.open(io.BytesIO(images[i]))
+            thumb.thumbnail((320, 320))
+            photo = ImageTk.PhotoImage(thumb)
             thumb_refs.append(photo)
             ttk.Label(row, image=photo).grid(row=0, column=0, rowspan=4, padx=6, pady=6)
 
